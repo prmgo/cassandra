@@ -50,7 +50,8 @@ public enum ConsistencyLevel
     EACH_QUORUM (7),
     SERIAL      (8),
     LOCAL_SERIAL(9),
-    LOCAL_ONE   (10, true);
+    LOCAL_ONE   (10, true),
+    REPAIRED_QUORUM(11);
 
     private static final Logger logger = LoggerFactory.getLogger(ConsistencyLevel.class);
 
@@ -116,6 +117,7 @@ public enum ConsistencyLevel
             case THREE:
                 return 3;
             case QUORUM:
+            case REPAIRED_QUORUM:
             case SERIAL:
                 return quorumFor(keyspace);
             case ALL:
