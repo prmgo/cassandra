@@ -1185,9 +1185,26 @@ public class StorageProxy implements StorageProxyMBean
             throw new IsBootstrappingException();
         }
 
-        return consistencyLevel.isSerialConsistency()
-             ? readWithPaxos(commands, consistencyLevel, state)
-             : readRegular(commands, consistencyLevel);
+        switch (consistencyLevel) {
+            case LOCAL_SERIAL:
+            case SERIAL:
+                return readWithPaxos(commands, consistencyLevel, state);
+            case REPAIRED_QUORUM:
+                return readWithRepairedQuorum(commands, consistencyLevel);
+            default:
+                return readRegular(commands, consistencyLevel);
+        }
+    }
+
+    private static List<Row> readWithRepairedQuorum(List<ReadCommand> commands, ConsistencyLevel consistencyLevel)
+            throws UnavailableException, ReadTimeoutException
+    {
+    //  TODO:
+    //  - Identify the max repairedAt time for the SStables that cover the partition
+    //  - Pass the max repaired at time to the ReadCommand and MessageService
+    //  - Execute the repaired only read locally.
+    //  - Merge the results.
+        return readRegular(commands, consistencyLevel);
     }
 
     private static List<Row> readWithPaxos(List<ReadCommand> commands, ConsistencyLevel consistencyLevel, ClientState state)
