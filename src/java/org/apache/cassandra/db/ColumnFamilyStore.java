@@ -25,6 +25,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+import javax.annotation.Nullable;
 import javax.management.*;
 import javax.management.openmbean.*;
 
@@ -35,6 +36,7 @@ import com.google.common.collect.*;
 import com.google.common.util.concurrent.*;
 
 import org.apache.cassandra.io.FSWriteError;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.json.simple.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1817,6 +1819,33 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return repairedSSTables;
     }
 
+    public Set<SSTableReader> getRepairedSSTablesForPartition(ByteBuffer key)
+    {
+        Set<SSTableReader> repairedSSTablesForKey = new HashSet<>(getSSTableReadersForPartition(key));
+
+        for (Iterator<SSTableReader> sstableIterator = repairedSSTablesForKey.iterator();
+                sstableIterator.hasNext();)
+        {
+            SSTableReader sstable = sstableIterator.next();
+            if (!sstable.isRepaired())
+                sstableIterator.remove();
+        }
+        return repairedSSTablesForKey;
+    }
+
+    public long getMaxRepairedTimeForSSTablesInPartition(ByteBuffer key)
+    {
+        long maxRepairedTime = ActiveRepairService.UNREPAIRED_SSTABLE; //zero
+        for (SSTableReader sstable : getRepairedSSTablesForPartition(key))
+        {
+            if (sstable.getRepairedAt() > maxRepairedTime)
+            {
+                maxRepairedTime = sstable.getRepairedAt();
+            }
+        }
+        return maxRepairedTime;
+    }
+
     public RefViewFragment selectAndReference(Function<DataTracker.View, List<SSTableReader>> filter)
     {
         while (true)
@@ -1896,15 +1925,29 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public List<String> getSSTablesForKey(String key)
     {
-        DecoratedKey dk = partitioner.decorateKey(metadata.getKeyValidator().fromString(key));
+        return Lists.transform(getSSTableReadersForPartition(metadata.getKeyValidator().fromString(key)),
+                new Function<SSTableReader, String>()
+                {
+                    @Nullable
+                    @Override
+                    public String apply(SSTableReader ssTableReader)
+                    {
+                        return ssTableReader.getFilename();
+                    }
+                });
+    }
+
+    public List<SSTableReader> getSSTableReadersForPartition(ByteBuffer key)
+    {
+        DecoratedKey dk = partitioner.decorateKey(key);
         try (OpOrder.Group op = readOrdering.start())
         {
-            List<String> files = new ArrayList<>();
+            List<SSTableReader> files = new ArrayList<>();
             for (SSTableReader sstr : select(viewFilter(dk)).sstables)
             {
                 // check if the key actually exists in this sstable, without updating cache and stats
                 if (sstr.getPosition(dk, SSTableReader.Operator.EQ, false) != null)
-                    files.add(sstr.getFilename());
+                    files.add(sstr);
             }
             return files;
         }

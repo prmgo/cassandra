@@ -39,6 +39,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
@@ -1715,12 +1716,10 @@ public class ColumnFamilyStoreTest extends SchemaLoader
 
         final CFMetaData cfmeta = Schema.instance.getCFMetaData(ks, cf);
         Directories dir = new Directories(cfmeta);
-        ByteBuffer key = bytes("key");
 
         // 1st sstable
         SSTableSimpleWriter writer = new SSTableSimpleWriter(dir.getDirectoryForNewSSTables(), cfmeta, StorageService.getPartitioner());
-        writer.newRow(key);
-        writer.addColumn(bytes("col"), bytes("val"), 1);
+        writeRow(writer, "key", "col", "val", 1);
         writer.close();
 
         Map<Descriptor, Set<Component>> sstables = dir.sstableLister().list();
@@ -1745,8 +1744,7 @@ public class ColumnFamilyStoreTest extends SchemaLoader
                                          collector);
             }
         };
-        writer.newRow(key);
-        writer.addColumn(bytes("col"), bytes("val"), 1);
+        writeRow(writer, "key", "col", "val", 1);
         writer.close();
 
         // should have 2 sstables now
@@ -1771,6 +1769,11 @@ public class ColumnFamilyStoreTest extends SchemaLoader
         assertTrue(unfinished.isEmpty());
         sstable1.selfRef().release();
         sstable2.selfRef().release();
+    }
+
+    private void writeRow(SSTableSimpleWriter writer, String key, String col, String val, long ts) throws IOException {
+        writer.newRow(bytes(key));
+        writer.addColumn(bytes(col), bytes(val), ts);
     }
 
     /**
@@ -1826,6 +1829,166 @@ public class ColumnFamilyStoreTest extends SchemaLoader
         sstables = dir.sstableLister().list();
         assert sstables.size() == 1;
         assert sstables.containsKey(sstable1.descriptor);
+    }
+
+    @Test
+    public void testGetRepairedSSTablesAndMaxRepairTimeForPartition() throws Throwable
+    {
+        String ks = "Keyspace1";
+        String cf = "Standard5"; // should be empty
+
+        final CFMetaData cfmeta = Schema.instance.getCFMetaData(ks, cf);
+        Directories dir = new Directories(cfmeta);
+
+        ColumnFamilyStore cfs = Keyspace.open(ks).getColumnFamilyStore(cf);
+        cfs.clearUnsafe();
+
+        //no sstables yet, so no repaired sstables for key1 and max repair time = 0
+        assertTrue(cfs.getRepairedSSTablesForPartition(bytes("key1")).isEmpty());
+        assertEquals(ActiveRepairService.UNREPAIRED_SSTABLE,
+                        cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key1")));
+
+        //write 2 sstables with key1 and key2
+        for (int i=1; i<=2; i++)
+        {
+            SSTableSimpleWriter writer = new SSTableSimpleWriter(dir.getDirectoryForNewSSTables(),
+                                                                    cfmeta, StorageService.getPartitioner());
+            writeRow(writer, String.format("key%d",i), "col", "val", 1);
+            writer.close();
+        }
+
+        //let's verify we have 2 sstables
+        Map<Descriptor, Set<Component>> sstables = dir.sstableLister().list();
+        assertEquals(2, sstables.size());
+
+        // Now let's try to get repaired sstables for key1 and key2 - should be none
+        assertTrue(cfs.getRepairedSSTablesForPartition(bytes("key1")).isEmpty());
+        assertTrue(cfs.getRepairedSSTablesForPartition(bytes("key2")).isEmpty());
+        // No repaired sstables yet, so max repair time is 0 for both keys
+        assertEquals(ActiveRepairService.UNREPAIRED_SSTABLE,
+                                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key1")));
+        assertEquals(ActiveRepairService.UNREPAIRED_SSTABLE,
+                                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key2")));
+
+        //let's suppose the 2 sstables were merged after repair
+        List<SSTableReader> previousSSTables = new ArrayList<>(2);
+        for (Map.Entry<Descriptor, Set<Component>> entry : sstables.entrySet())
+        {
+            previousSSTables.add(SSTableReader.open(entry.getKey()));
+        }
+        final long repairTime1 = System.currentTimeMillis();
+        SSTableSimpleWriter  writer = getRepairWriter(cfmeta, dir, previousSSTables, repairTime1);
+        writeRow(writer, "key1", "col", "val", 1);
+        writeRow(writer, "key2", "col", "val", 1);
+        writer.close();
+        releaseSSTables(previousSSTables);
+
+        // should have 3 sstables now
+        sstables = dir.sstableLister().list();
+        assertEquals(3, sstables.size());
+
+        //now let's verify repairedSSTablesForKey return only the recently repaired sstable for both keys
+        cfs.loadNewSSTables();
+        Set<SSTableReader> repairedSSTablesForKey1 = cfs.getRepairedSSTablesForPartition(bytes("key1"));
+        assertEquals(1, repairedSSTablesForKey1.size());
+        Set<SSTableReader> repairedSSTablesForKey2 = cfs.getRepairedSSTablesForPartition(bytes("key2"));
+        assertEquals(1, repairedSSTablesForKey2.size());
+        assertEquals(repairedSSTablesForKey1.iterator().next(), repairedSSTablesForKey2.iterator().next());
+
+        // max repair time is equal to repairTime1 for both keys
+        assertEquals(repairTime1,
+                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key1")));
+        assertEquals(repairTime1,
+                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key2")));
+
+        // now let's write a new sstable for key1
+        writer = new SSTableSimpleWriter(dir.getDirectoryForNewSSTables(),
+                cfmeta, StorageService.getPartitioner());
+        writeRow(writer, "key1", "col2", "val2", 2);
+        writer.close();
+
+        // should have 4 sstables now
+        sstables = dir.sstableLister().list();
+        assertEquals(4, sstables.size());
+
+        //now let's verify repairedSSTablesForKey return only repaired sstable for key1
+        cfs.loadNewSSTables();
+        repairedSSTablesForKey1 = cfs.getRepairedSSTablesForPartition(bytes("key1"));
+        assertEquals(1, repairedSSTablesForKey1.size());
+        //max repair time still the same for key1
+        assertEquals(repairTime1,
+                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key1")));
+
+        //key2 wasn't changed
+        repairedSSTablesForKey2 = cfs.getRepairedSSTablesForPartition(bytes("key2"));
+        assertEquals(1, repairedSSTablesForKey2.size());
+        assertEquals(repairTime1,
+                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key1")));
+        assertEquals(repairedSSTablesForKey1.iterator().next(), repairedSSTablesForKey2.iterator().next());
+        cfs.clearUnsafe();
+
+        //suppose the last sstable with key1,col2,val2 was repaired
+        Descriptor lastSSTableDescriptor = null;
+        for (Map.Entry<Descriptor, Set<Component>> entry : sstables.entrySet())
+        {
+            lastSSTableDescriptor = entry.getKey();
+        }
+        List<SSTableReader> lastSStable = Collections.singletonList(SSTableReader.open(lastSSTableDescriptor));
+
+        final long repairTime2 = System.currentTimeMillis();
+        writer = getRepairWriter(cfmeta, dir, lastSStable, repairTime2);
+        writeRow(writer, "key1", "col2", "val2", 1);
+        writer.close();
+        releaseSSTables(lastSStable);
+
+        // should have 5 sstables now
+        sstables = dir.sstableLister().list();
+        assertEquals(5, sstables.size());
+
+        //now let's verify repairedSSTablesForKey return 2 repaired sstables for key1 and only one for key2
+        cfs.loadNewSSTables();
+        //key1 now has 2 repaired sstables, and max repair time of repairTime2
+        repairedSSTablesForKey1 = cfs.getRepairedSSTablesForPartition(bytes("key1"));
+        assertEquals(2, repairedSSTablesForKey1.size());
+        assertEquals(repairTime2,
+                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key1")));
+
+        //key2 still has 1 repaired sstable, and max repair time of repairTime1
+        repairedSSTablesForKey2 = cfs.getRepairedSSTablesForPartition(bytes("key2"));
+        assertEquals(1, repairedSSTablesForKey2.size());
+        assertEquals(repairTime1,
+                cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key2")));
+        cfs.clearUnsafe();
+    }
+
+    private void releaseSSTables(Collection<SSTableReader> sstables) {
+        for (SSTableReader sstable : sstables) {
+            sstable.selfRef().release();
+        }
+    }
+
+    private SSTableSimpleWriter getRepairWriter(final CFMetaData cfmeta, final Directories dir,
+                                                final Collection<SSTableReader> parentSSTables, final long repairedAt) {
+        SSTableSimpleWriter writer = new SSTableSimpleWriter(dir.getDirectoryForNewSSTables(),
+                cfmeta, StorageService.getPartitioner())
+        {
+            protected SSTableWriter getWriter()
+            {
+                MetadataCollector collector = new MetadataCollector(cfmeta.comparator);
+                for (SSTableReader parentSSTable : parentSSTables)
+                {
+                    // add ancestor from previously written sstables
+                    collector.addAncestor(parentSSTable.descriptor.generation);
+                }
+                return new SSTableWriter(makeFilename(directory, metadata.ksName, metadata.cfName),
+                        0,
+                        repairedAt,
+                        metadata,
+                        StorageService.getPartitioner(),
+                        collector);
+            }
+        };
+        return writer;
     }
 
     @Test
