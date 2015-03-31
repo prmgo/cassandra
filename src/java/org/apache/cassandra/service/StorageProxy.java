@@ -1197,14 +1197,40 @@ public class StorageProxy implements StorageProxyMBean
     }
 
     private static List<Row> readWithRepairedQuorum(List<ReadCommand> commands, ConsistencyLevel consistencyLevel)
-            throws UnavailableException, ReadTimeoutException
+            throws InvalidRequestException, UnavailableException, ReadTimeoutException
     {
+        if (commands.size() > 1)
+        {
+            throw new InvalidRequestException("REPAIRED_QUORUM consistency may only be requested for one row at a time");
+        }
+
+        ReadCommand command = commands.get(0);
+        Keyspace keyspace = Keyspace.open(command.ksName);
+
+        if (!isLocalRequest(keyspace, command))
+        {
+            throw new InvalidRequestException("REPAIRED_QUORUM consistency may only be requested from a coordinator" +
+                                                "that is a replica of the row being queried.");
+        }
+
+        //Identify the max repairedAt time for the SStables that cover the partition
+        long maxRepairedTime = getMaxRepairedTimeForQueryPartition(keyspace, command);
+
     //  TODO:
-    //  - Identify the max repairedAt time for the SStables that cover the partition
     //  - Pass the max repaired at time to the ReadCommand and MessageService
     //  - Execute the repaired only read locally.
     //  - Merge the results.
         return readRegular(commands, consistencyLevel);
+    }
+
+    private static boolean isLocalRequest(Keyspace keyspace, ReadCommand command) {
+        List<InetAddress> allReplicas = getLiveSortedEndpoints(keyspace, command.key);
+        return allReplicas.get(0).equals(FBUtilities.getBroadcastAddress()) && OPTIMIZE_LOCAL_REQUESTS;
+    }
+
+    private static long getMaxRepairedTimeForQueryPartition(Keyspace keyspace, ReadCommand command) {
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(command.cfName);
+        return cfs.getMaxRepairedTimeForSSTablesInPartition(command.key);
     }
 
     private static List<Row> readWithPaxos(List<ReadCommand> commands, ConsistencyLevel consistencyLevel, ClientState state)
