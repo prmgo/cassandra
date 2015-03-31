@@ -1888,6 +1888,11 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
         return sstableMetadata.replayPosition;
     }
 
+    public long getRepairedAt()
+    {
+        return sstableMetadata.repairedAt;
+    }
+
     public long getMinTimestamp()
     {
         return sstableMetadata.minTimestamp;
