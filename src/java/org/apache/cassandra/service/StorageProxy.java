@@ -1216,8 +1216,15 @@ public class StorageProxy implements StorageProxyMBean
         //Identify the max repairedAt time for the SStables that cover the partition
         long maxRepairedTime = getMaxRepairedTimeForQueryPartition(keyspace, command);
 
+        //Pass the max repaired at time to the ReadCommand and MessageService
+        command.setMaxPartitionRepairTime(maxRepairedTime);
+
+        assert !command.isDigestQuery();
+
+        AbstractReadExecutor exec = AbstractReadExecutor.getReadExecutor(command, consistencyLevel);
+        exec.executeAsync();
+
     //  TODO:
-    //  - Pass the max repaired at time to the ReadCommand and MessageService
     //  - Execute the repaired only read locally.
     //  - Merge the results.
         return readRegular(commands, consistencyLevel);
