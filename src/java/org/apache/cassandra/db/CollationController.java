@@ -47,14 +47,16 @@ public class CollationController
     private final ColumnFamilyStore cfs;
     private final QueryFilter filter;
     private final int gcBefore;
+    private final long maxRepairedAt;
 
     private int sstablesIterated = 0;
 
-    public CollationController(ColumnFamilyStore cfs, QueryFilter filter, int gcBefore)
+    public CollationController(ColumnFamilyStore cfs, QueryFilter filter, int gcBefore, long maxRepairedAt)
     {
         this.cfs = cfs;
         this.filter = filter;
         this.gcBefore = gcBefore;
+        this.maxRepairedAt = maxRepairedAt;
     }
 
     public ColumnFamily getTopLevelColumns(boolean copyOnHeap)
@@ -118,6 +120,14 @@ public class CollationController
                 // will also be older
                 if (sstable.getMaxTimestamp() < mostRecentRowTombstone)
                     break;
+
+                // If REPAIRED_QUORUM CL is used, we skip SSTables repaired on or before
+                // the most recent repair the coordinator has participated.
+                // See CASSANDRA-7168 for background
+                if (isRepairedOnOrBeforMaxRepairedAt(sstable))
+                {
+                    break;
+                }
 
                 long currentMaxTs = sstable.getMaxTimestamp();
                 reduceNameFilter(reducedFilter, container, currentMaxTs);
@@ -247,6 +257,7 @@ public class CollationController
             long mostRecentRowTombstone = Long.MIN_VALUE;
             long minTimestamp = Long.MAX_VALUE;
             int nonIntersectingSSTables = 0;
+            int skippedRepairedSSTables = 0;
 
             for (SSTableReader sstable : view.sstables)
             {
@@ -255,6 +266,15 @@ public class CollationController
                 // than the most recent update to this sstable, we can skip it
                 if (sstable.getMaxTimestamp() < mostRecentRowTombstone)
                     break;
+
+                // If REPAIRED_QUORUM CL is used, we skip SSTables repaired on or before
+                // the most recent repair the coordinator has participated.
+                // See CASSANDRA-7168 for background
+                if (isRepairedOnOrBeforMaxRepairedAt(sstable))
+                {
+                    skippedRepairedSSTables++;
+                    break;
+                }
 
                 if (!filter.shouldInclude(sstable))
                 {
@@ -310,7 +330,9 @@ public class CollationController
                 }
             }
             if (Tracing.isTracing())
-                Tracing.trace("Skipped {}/{} non-slice-intersecting sstables, included {} due to tombstones", new Object[] {nonIntersectingSSTables, view.sstables.size(), includedDueToTombstones});
+                Tracing.trace("Skipped {}/{} non-slice-intersecting sstables and {} repaired sstables, " +
+                        "included {} due to tombstones", new Object[] {nonIntersectingSSTables, view.sstables.size(),
+                                                                        skippedRepairedSSTables, includedDueToTombstones});
             // we need to distinguish between "there is no data at all for this row" (BF will let us rebuild that efficiently)
             // and "there used to be data, but it's gone now" (we should cache the empty CF so we don't need to rebuild that slower)
             if (iterators.isEmpty())
@@ -328,6 +350,10 @@ public class CollationController
                 if (iter instanceof Closeable)
                     FileUtils.closeQuietly((Closeable) iter);
         }
+    }
+
+    private boolean isRepairedOnOrBeforMaxRepairedAt(SSTableReader sstable) {
+        return sstable.isRepaired() && sstable.getRepairedAt() <= maxRepairedAt;
     }
 
     public int getSstablesIterated()

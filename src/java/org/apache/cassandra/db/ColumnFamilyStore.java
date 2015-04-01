@@ -1736,7 +1736,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         try
         {
             int gcBefore = gcBefore(filter.timestamp);
-            if (isRowCacheEnabled())
+            long maxRepairedAt = filter.maxPartitionRepairTime;
+            boolean repairedQuorumRead = maxRepairedAt != ActiveRepairService.UNREPAIRED_SSTABLE;
+
+            if (!repairedQuorumRead && isRowCacheEnabled()) // Avoiding row cache for repaired quorum read for now
             {
                 assert !isIndex(); // CASSANDRA-5732
                 UUID cfId = metadata.cfId;
@@ -1752,7 +1755,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             }
             else
             {
-                ColumnFamily cf = getTopLevelColumns(filter, gcBefore);
+                ColumnFamily cf = getTopLevelColumns(filter, gcBefore, maxRepairedAt);
 
                 if (cf == null)
                     return null;
@@ -1953,10 +1956,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    public ColumnFamily getTopLevelColumns(QueryFilter filter, int gcBefore)
+    public ColumnFamily getTopLevelColumns(QueryFilter filter, int gcBefore, long maxRepairedAt)
     {
         Tracing.trace("Executing single-partition query on {}", name);
-        CollationController controller = new CollationController(this, filter, gcBefore);
+        CollationController controller = new CollationController(this, filter, gcBefore, maxRepairedAt);
         ColumnFamily columns;
         try (OpOrder.Group op = readOrdering.start())
         {
@@ -1966,6 +1969,11 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             metric.samplers.get(Sampler.READS).addSample(filter.key.getKey(), filter.key.hashCode(), 1);
         metric.updateSSTableIterated(controller.getSstablesIterated());
         return columns;
+    }
+
+    public ColumnFamily getTopLevelColumns(QueryFilter filter, int gcBefore)
+    {
+        return getTopLevelColumns(filter, gcBefore, ActiveRepairService.UNREPAIRED_SSTABLE);
     }
 
     public void beginLocalSampling(String sampler, int capacity)
