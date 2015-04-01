@@ -29,6 +29,7 @@ import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.net.MessageOut;
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.service.IReadCommand;
 import org.apache.cassandra.service.RowDataResolver;
 import org.apache.cassandra.service.pager.Pageable;
@@ -65,6 +66,7 @@ public abstract class ReadCommand implements IReadCommand, Pageable
     public final ByteBuffer key;
     public final long timestamp;
     private boolean isDigestQuery = false;
+    private long maxPartitionRepairTime = ActiveRepairService.UNREPAIRED_SSTABLE;
     protected final Type commandType;
 
     protected ReadCommand(String ksName, ByteBuffer key, String cfName, long timestamp, Type cmdType)
@@ -92,6 +94,16 @@ public abstract class ReadCommand implements IReadCommand, Pageable
     public ReadCommand setIsDigestQuery(boolean isDigestQuery)
     {
         this.isDigestQuery = isDigestQuery;
+        return this;
+    }
+
+    public long getMaxPartitionRepairTime() {
+        return maxPartitionRepairTime;
+    }
+
+    public ReadCommand setMaxPartitionRepairTime(long maxPartitionRepairTime)
+    {
+        this.maxPartitionRepairTime = maxPartitionRepairTime;
         return this;
     }
 
