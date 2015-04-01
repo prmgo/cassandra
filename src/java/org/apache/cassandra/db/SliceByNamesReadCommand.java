@@ -81,7 +81,7 @@ class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadComm
         ByteBufferUtil.writeWithShortLength(command.key, out);
         out.writeUTF(command.cfName);
         out.writeLong(cmd.timestamp);
-
+        out.writeLong(cmd.getMaxPartitionRepairTime()); //TODO: omit this when not set
         CFMetaData metadata = Schema.instance.getCFMetaData(cmd.ksName, cmd.cfName);
         metadata.comparator.namesQueryFilterSerializer().serialize(command.filter, out, version);
     }
@@ -93,9 +93,11 @@ class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadComm
         ByteBuffer key = ByteBufferUtil.readWithShortLength(in);
         String cfName = in.readUTF();
         long timestamp = in.readLong();
+        long maxPartitionRepairTime = in.readLong();
         CFMetaData metadata = Schema.instance.getCFMetaData(keyspaceName, cfName);
         NamesQueryFilter filter = metadata.comparator.namesQueryFilterSerializer().deserialize(in, version);
-        return new SliceByNamesReadCommand(keyspaceName, key, cfName, timestamp, filter).setIsDigestQuery(isDigest);
+        return new SliceByNamesReadCommand(keyspaceName, key, cfName, timestamp, filter).setIsDigestQuery(isDigest)
+                .setMaxPartitionRepairTime(maxPartitionRepairTime);
     }
 
     public long serializedSize(ReadCommand cmd, int version)
@@ -111,6 +113,7 @@ class SliceByNamesReadCommandSerializer implements IVersionedSerializer<ReadComm
         size += sizes.sizeof((short)keySize) + keySize;
         size += sizes.sizeof(command.cfName);
         size += sizes.sizeof(cmd.timestamp);
+        size += sizes.sizeof(cmd.getMaxPartitionRepairTime());
         size += metadata.comparator.namesQueryFilterSerializer().serializedSize(command.filter, version);
 
         return size;
