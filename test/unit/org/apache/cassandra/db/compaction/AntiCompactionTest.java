@@ -62,13 +62,8 @@ public class AntiCompactionTest extends SchemaLoader
         Collection<SSTableReader> sstables = store.getUnrepairedSSTables();
         assertEquals(store.getSSTables().size(), sstables.size());
         Range<Token> range = new Range<Token>(new BytesToken("0".getBytes()), new BytesToken("4".getBytes()));
-        List<Range<Token>> ranges = Arrays.asList(range);
 
-        Refs<SSTableReader> refs = Refs.tryRef(sstables);
-        if (refs == null)
-            throw new IllegalStateException();
-        long repairedAt = 1000;
-        CompactionManager.instance.performAnticompaction(store, ranges, refs, repairedAt);
+        performAntiCompactionOnRange(store, range, 1000);
 
         assertEquals(2, store.getSSTables().size());
         int repairedKeys = 0;
@@ -102,6 +97,16 @@ public class AntiCompactionTest extends SchemaLoader
         assertEquals(repairedKeys, 4);
         assertEquals(nonRepairedKeys, 6);
     }
+
+    public static void performAntiCompactionOnRange(ColumnFamilyStore store, Range<Token> range, long repairedAt)
+                                                                    throws InterruptedException, ExecutionException, IOException {
+        Collection<SSTableReader> sstables = store.getSSTables();
+        Refs<SSTableReader> refs = Refs.tryRef(sstables);
+        if (refs == null)
+            throw new IllegalStateException();
+        CompactionManager.instance.performAnticompaction(store, Arrays.asList(range), refs, repairedAt);
+    }
+
     @Test
     public void antiCompactionSizeTest() throws ExecutionException, InterruptedException, IOException
     {
@@ -112,8 +117,8 @@ public class AntiCompactionTest extends SchemaLoader
         cfs.addSSTable(s);
         long origSize = s.bytesOnDisk();
         Range<Token> range = new Range<Token>(new BytesToken(ByteBufferUtil.bytes(0)), new BytesToken(ByteBufferUtil.bytes(500)));
-        Collection<SSTableReader> sstables = cfs.getSSTables();
-        CompactionManager.instance.performAnticompaction(cfs, Arrays.asList(range), Refs.tryRef(sstables), 12345);
+        performAntiCompactionOnRange(cfs, range, 12345);
+
         long sum = 0;
         for (SSTableReader x : cfs.getSSTables())
             sum += x.bytesOnDisk();
@@ -149,12 +154,9 @@ public class AntiCompactionTest extends SchemaLoader
         Collection<SSTableReader> sstables = store.getUnrepairedSSTables();
         assertEquals(store.getSSTables().size(), sstables.size());
         Range<Token> range = new Range<Token>(new BytesToken("-10".getBytes()), new BytesToken("-1".getBytes()));
-        List<Range<Token>> ranges = Arrays.asList(range);
 
-        Refs<SSTableReader> refs = Refs.tryRef(sstables);
-        if (refs == null)
-            throw new IllegalStateException();
-        CompactionManager.instance.performAnticompaction(store, ranges, refs, 1);
+        performAntiCompactionOnRange(store, range, 1);
+
         assertThat(store.getSSTables().size(), is(1));
         assertThat(Iterables.get(store.getSSTables(), 0).isRepaired(), is(false));
         assertThat(Iterables.get(store.getSSTables(), 0).selfRef().globalCount(), is(1));
@@ -168,9 +170,8 @@ public class AntiCompactionTest extends SchemaLoader
         Collection<SSTableReader> sstables = store.getUnrepairedSSTables();
         assertEquals(store.getSSTables().size(), sstables.size());
         Range<Token> range = new Range<Token>(new BytesToken("0".getBytes()), new BytesToken("9999".getBytes()));
-        List<Range<Token>> ranges = Arrays.asList(range);
 
-        CompactionManager.instance.performAnticompaction(store, ranges, Refs.tryRef(sstables), 1);
+        performAntiCompactionOnRange(store, range, 1);
 
         assertThat(store.getSSTables().size(), is(1));
         assertThat(Iterables.get(store.getSSTables(), 0).isRepaired(), is(true));
@@ -179,7 +180,7 @@ public class AntiCompactionTest extends SchemaLoader
     }
 
 
-    private ColumnFamilyStore prepareColumnFamilyStore()
+    public static ColumnFamilyStore prepareColumnFamilyStore()
     {
         Keyspace keyspace = Keyspace.open(KEYSPACE1);
         ColumnFamilyStore store = keyspace.getColumnFamilyStore(CF);
