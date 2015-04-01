@@ -34,6 +34,7 @@ import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
 import org.apache.cassandra.db.composites.CellName;
 import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.MergeIterator;
 
 public class QueryFilter
@@ -42,13 +43,20 @@ public class QueryFilter
     public final String cfName;
     public final IDiskAtomFilter filter;
     public final long timestamp;
+    public final long maxPartitionRepairTime;
 
     public QueryFilter(DecoratedKey key, String cfName, IDiskAtomFilter filter, long timestamp)
+    {
+        this(key, cfName, filter, timestamp, ActiveRepairService.UNREPAIRED_SSTABLE);
+    }
+
+    public QueryFilter(DecoratedKey key, String cfName, IDiskAtomFilter filter, long timestamp, long maxPartitionRepairTime)
     {
         this.key = key;
         this.cfName = cfName;
         this.filter = filter;
         this.timestamp = timestamp;
+        this.maxPartitionRepairTime = maxPartitionRepairTime;
     }
 
     public Iterator<Cell> getIterator(ColumnFamily cf)
