@@ -152,9 +152,10 @@ public abstract class AbstractReadExecutor
         // Throw UAE early if we don't have enough replicas.
         consistencyLevel.assureSufficientLiveNodes(keyspace, targetReplicas);
 
-        // Fat client. Speculating read executors need access to cfs metrics and sampled latency, and fat clients
-        // can't provide that. So, for now, fat clients will always use NeverSpeculatingReadExecutor.
-        if (StorageService.instance.isClientMode())
+        // Fat client or repaired quorum consistency. Speculating read executors need access to cfs metrics and
+        // sampled latency, and fat clients can't provide that. So, for now, fat clients will always use
+        // NeverSpeculatingReadExecutor.
+        if (StorageService.instance.isClientMode() || consistencyLevel.equals(ConsistencyLevel.REPAIRED_QUORUM))
             return new NeverSpeculatingReadExecutor(command, consistencyLevel, targetReplicas);
 
         if (repairDecision != ReadRepairDecision.NONE)
