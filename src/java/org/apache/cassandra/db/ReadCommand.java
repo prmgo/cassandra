@@ -107,6 +107,11 @@ public abstract class ReadCommand implements IReadCommand, Pageable
         return this;
     }
 
+    public boolean isRepairOptimized()
+    {
+        return this.maxPartitionRepairTime != ActiveRepairService.UNREPAIRED_SSTABLE;
+    }
+
     public String getColumnFamilyName()
     {
         return cfName;
