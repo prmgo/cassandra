@@ -280,6 +280,7 @@ cqlsh_extra_syntax_rules = r'''
                      | "SERIAL"
                      | "LOCAL_SERIAL"
                      | "LOCAL_ONE"
+                     | "REPAIRED_QUORUM"
                      ;
 
 <showCommand> ::= "SHOW" what=( "VERSION" | "HOST" | "SESSION" sessionid=<uuid> )
@@ -1930,7 +1931,7 @@ class Shell(cmd.Cmd):
 
            Valid consistency levels:
 
-           ANY, ONE, TWO, THREE, QUORUM, ALL, LOCAL_ONE, LOCAL_QUORUM and EACH_QUORUM.
+           ANY, ONE, TWO, THREE, QUORUM, ALL, LOCAL_ONE, REPAIRED_QUORUM, LOCAL_QUORUM and EACH_QUORUM.
 
         CONSISTENCY
 
