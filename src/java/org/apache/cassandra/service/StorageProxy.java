@@ -27,10 +27,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
+import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.*;
 import com.google.common.util.concurrent.Uninterruptibles;
+import org.apache.cassandra.db.columniterator.OnDiskAtomIterator;
+import org.apache.cassandra.db.filter.QueryFilter;
+import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.metrics.*;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -1199,6 +1203,8 @@ public class StorageProxy implements StorageProxyMBean
     private static List<Row> readWithRepairedQuorum(List<ReadCommand> commands, ConsistencyLevel consistencyLevel)
             throws InvalidRequestException, UnavailableException, ReadTimeoutException
     {
+        long start = System.nanoTime();
+
         if (commands.size() > 1)
         {
             throw new InvalidRequestException("REPAIRED_QUORUM consistency may only be requested for one row at a time");
@@ -1213,26 +1219,46 @@ public class StorageProxy implements StorageProxyMBean
                                                 "that is a replica of the row being queried.");
         }
 
-        //Identify the max repairedAt time for the SStables that cover the partition
+        //Identify the maxRepairedTime for the SStables that cover the partition
         long maxRepairedTime = getMaxRepairedTimeForQueryPartition(keyspace, command);
 
-        //Pass the max repaired at time to the ReadCommand and MessageService
+        Tracing.trace("Sending REPAIRED_QUORUM read command to replicas with max repaired time of {}.",
+                new Object[]{ maxRepairedTime });
+
+        //Pass the maxRepairedTime to the ReadCommand and MessageService
         command.setMaxPartitionRepairTime(maxRepairedTime);
 
-        assert !command.isDigestQuery();
+        List<Row> rows = null;
 
-        AbstractReadExecutor exec = AbstractReadExecutor.getReadExecutor(command, consistencyLevel);
-        exec.executeAsync();
+        try
+        {
+            rows = fetchRows(commands, consistencyLevel);
+        }
+        catch (UnavailableException e)
+        {
+            readMetrics.unavailables.mark();
+            ClientRequestMetrics.readUnavailables.inc();
+            throw e;
+        }
+        catch (ReadTimeoutException e)
+        {
+            readMetrics.timeouts.mark();
+            ClientRequestMetrics.readTimeouts.inc();
+            throw e;
+        }
+        finally
+        {
+            long latency = System.nanoTime() - start;
+            readMetrics.addNano(latency);
+            Keyspace.open(command.ksName).getColumnFamilyStore(command.cfName).metric.coordinatorReadLatency.update(latency, TimeUnit.NANOSECONDS);
+        }
 
-    //  TODO:
-    //  - Execute the repaired only read locally.
-    //  - Merge the results.
-        return readRegular(commands, consistencyLevel);
+        return rows;
     }
 
     private static boolean isLocalRequest(Keyspace keyspace, ReadCommand command) {
         List<InetAddress> allReplicas = getLiveSortedEndpoints(keyspace, command.key);
-        return allReplicas.get(0).equals(FBUtilities.getBroadcastAddress()) && OPTIMIZE_LOCAL_REQUESTS;
+        return allReplicas.contains(FBUtilities.getBroadcastAddress()) && OPTIMIZE_LOCAL_REQUESTS;
     }
 
     private static long getMaxRepairedTimeForQueryPartition(Keyspace keyspace, ReadCommand command) {
@@ -1388,6 +1414,10 @@ public class StorageProxy implements StorageProxyMBean
                     Row row = exec.get();
                     if (row != null)
                     {
+                        if (exec.command.isRepairOptimized() && isRepairedQuorumCoordinator(consistencyLevel, exec.command))
+                        {
+                            row = collateRepairedSStables(exec.command, row);
+                        }
                         exec.command.maybeTrim(row);
                         rows.add(row);
                     }
@@ -1515,6 +1545,46 @@ public class StorageProxy implements StorageProxyMBean
         } while (!commandsToRetry.isEmpty());
 
         return rows;
+    }
+
+    //FIXME: don't know if this is the best place for this collation - leaving here for now.
+    private static Row collateRepairedSStables(final ReadCommand cmd, Row unrepairedCf) {
+        Keyspace ks = Keyspace.open(cmd.ksName);
+        ColumnFamilyStore cfs = ks.getColumnFamilyStore(cmd.cfName);
+
+        //Execute the repaired only read locally.
+        List<OnDiskAtomIterator> repairedSSTables = getRepairedSSTablesColumns(cfs, cmd);
+        Tracing.trace("Merging {} unrepaired columns with data from {} repaired sstables.",
+                new Object[]{ unrepairedCf.cf.getColumnCount(), repairedSSTables.size() });
+
+        //Merge the results
+        ColumnFamily mergedCf = unrepairedCf.cf.cloneMeShallow();
+        QueryFilter.collateOnDiskAtom(mergedCf, repairedSSTables, cmd.filter(),
+                cfs.gcBefore(cmd.timestamp), cmd.timestamp);
+
+        return new Row(cmd.key, mergedCf);
+    }
+
+    private static List<OnDiskAtomIterator> getRepairedSSTablesColumns(ColumnFamilyStore cfs, ReadCommand cmd)
+    {
+        Set<SSTableReader> repairedSSTablesForPartition = cfs.getRepairedSSTablesForPartition(cmd.key,
+                cmd.getMaxPartitionRepairTime());
+
+        DecoratedKey dk = StorageService.getPartitioner().decorateKey(cmd.key);
+        final QueryFilter filter = new QueryFilter(dk, cmd.cfName, cmd.filter(), cmd.timestamp);
+
+        return Lists.newArrayList(Iterables.transform(repairedSSTablesForPartition,
+                new Function<SSTableReader, OnDiskAtomIterator>()
+                {
+                    public OnDiskAtomIterator apply(SSTableReader sstable)
+                    {
+                        return filter.getSSTableColumnIterator(sstable);
+                    }
+                }));
+    }
+
+    private static boolean isRepairedQuorumCoordinator(ConsistencyLevel consistencyLevel, ReadCommand cmd) {
+        return consistencyLevel.equals(ConsistencyLevel.REPAIRED_QUORUM) && isLocalRequest(Keyspace.open(cmd.ksName), cmd);
     }
 
     static class LocalReadRunnable extends DroppableRunnable
