@@ -1958,6 +1958,11 @@ public class ColumnFamilyStoreTest extends SchemaLoader
         assertEquals(1, repairedSSTablesForKey2.size());
         assertEquals(repairTime1,
                 cfs.getMaxRepairedTimeForSSTablesInPartition(bytes("key2")));
+
+        //now let's check only 1 sstable is returned if we call
+        //getRepairedSSTablesForPartition("key1", maxRepairedAt = repairTime1)
+        repairedSSTablesForKey1 = cfs.getRepairedSSTablesForPartition(bytes("key1"), repairTime1);
+        assertEquals(1, repairedSSTablesForKey1.size());
         cfs.clearUnsafe();
     }
 

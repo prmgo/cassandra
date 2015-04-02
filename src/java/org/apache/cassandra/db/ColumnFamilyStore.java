@@ -1824,13 +1824,18 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public Set<SSTableReader> getRepairedSSTablesForPartition(ByteBuffer key)
     {
+        return getRepairedSSTablesForPartition(key, Long.MAX_VALUE);
+    }
+
+    public Set<SSTableReader> getRepairedSSTablesForPartition(ByteBuffer key, long maxRepairedAt)
+    {
         Set<SSTableReader> repairedSSTablesForKey = new HashSet<>(getSSTableReadersForPartition(key));
 
         for (Iterator<SSTableReader> sstableIterator = repairedSSTablesForKey.iterator();
                 sstableIterator.hasNext();)
         {
             SSTableReader sstable = sstableIterator.next();
-            if (!sstable.isRepaired())
+            if (!sstable.isRepaired() || sstable.getRepairedAt() > maxRepairedAt)
                 sstableIterator.remove();
         }
         return repairedSSTablesForKey;
