@@ -112,6 +112,7 @@ public class CollationController
             /* add the SSTables on disk */
             Collections.sort(view.sstables, SSTableReader.maxTimestampComparator);
 
+            int skippedRepairedSStables = 0;
             // read sorted sstables
             for (SSTableReader sstable : view.sstables)
             {
@@ -126,6 +127,7 @@ public class CollationController
                 // See CASSANDRA-7168 for background
                 if (isRepairedOnOrBeforMaxRepairedAt(sstable))
                 {
+                    skippedRepairedSStables++;
                     break;
                 }
 
@@ -147,6 +149,10 @@ public class CollationController
                         container.addAtom(iter.next());
                 }
                 mostRecentRowTombstone = container.deletionInfo().getTopLevelDeletion().markedForDeleteAt;
+            }
+            if (skippedRepairedSStables > 0)
+            {
+                Tracing.trace("Skipped {} sstables with repairedAt <= {}.", new Object[]{skippedRepairedSStables, maxRepairedAt});
             }
 
             // we need to distinguish between "there is no data at all for this row" (BF will let us rebuild that efficiently)
@@ -330,9 +336,9 @@ public class CollationController
                 }
             }
             if (Tracing.isTracing())
-                Tracing.trace("Skipped {}/{} non-slice-intersecting sstables and {} repaired sstables, " +
+                Tracing.trace("Skipped {}/{} non-slice-intersecting sstables and {} repaired sstables with repairedAt <= {}, " +
                         "included {} due to tombstones", new Object[] {nonIntersectingSSTables, view.sstables.size(),
-                                                                        skippedRepairedSSTables, includedDueToTombstones});
+                                                                        skippedRepairedSSTables, maxRepairedAt, includedDueToTombstones});
             // we need to distinguish between "there is no data at all for this row" (BF will let us rebuild that efficiently)
             // and "there used to be data, but it's gone now" (we should cache the empty CF so we don't need to rebuild that slower)
             if (iterators.isEmpty())
