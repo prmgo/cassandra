@@ -1414,7 +1414,7 @@ public class StorageProxy implements StorageProxyMBean
                     Row row = exec.get();
                     if (row != null)
                     {
-                        if (exec.command.isRepairOptimized() && isRepairedQuorumCoordinator(consistencyLevel, exec.command))
+                        if (isRepairedQuorumRead(exec.command))
                         {
                             row = collateRepairedQuorumRead(exec.command, row);
                         }
@@ -1537,6 +1537,10 @@ public class StorageProxy implements StorageProxyMBean
 
                     if (row != null)
                     {
+                        if (isRepairedQuorumRead(command))
+                        {
+                            row = collateRepairedQuorumRead(command, row);
+                        }
                         command.maybeTrim(row);
                         rows.add(row);
                     }
@@ -1600,8 +1604,8 @@ public class StorageProxy implements StorageProxyMBean
                 }));
     }
 
-    private static boolean isRepairedQuorumCoordinator(ConsistencyLevel consistencyLevel, ReadCommand cmd) {
-        return consistencyLevel.equals(ConsistencyLevel.REPAIRED_QUORUM) && isLocalRequest(Keyspace.open(cmd.ksName), cmd);
+    private static boolean isRepairedQuorumRead(ReadCommand cmd) {
+        return cmd.getMaxPartitionRepairTime() != ActiveRepairService.UNREPAIRED_SSTABLE && isLocalRequest(Keyspace.open(cmd.ksName), cmd);
     }
 
     static class LocalReadRunnable extends DroppableRunnable
