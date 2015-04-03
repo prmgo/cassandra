@@ -1557,7 +1557,7 @@ public class StorageProxy implements StorageProxyMBean
      * first step of the remote REPAIRED_QUORUM read with local repaired columns of
      * the query coordinator, which is assumed to be a replica of the query partition.
      *
-     * FIXME: don't know if the StorageProxy is the best place for this collation - leaving here for now.
+     * FIXME: don't know if the StorageProxy is the best place for this collation, should we move this to CollationController?
      */
     private static Row collateRepairedQuorumRead(final ReadCommand cmd, Row unrepairedRow) {
         ColumnFamilyStore cfs = Keyspace.open(cmd.ksName).getColumnFamilyStore(cmd.cfName);
@@ -1577,14 +1577,16 @@ public class StorageProxy implements StorageProxyMBean
                                                               ColumnFamilyStore cfs, QueryFilter filter,
                                                               List<OnDiskAtomIterator> repairedSSTables)
     {
+        ColumnFamily returnCF = ArrayBackedSortedColumns.factory.create(cfs.metadata, cmd.filter().isReversed());
+
         List<Iterator<? extends OnDiskAtom>> iterators = new ArrayList<>();
         iterators.addAll(repairedSSTables);
         if (unrepairedCf != null)
         {
             iterators.add(filter.getIterator(unrepairedCf));
+            returnCF.delete(unrepairedCf); //include unrepaired tombstones on the results
         }
 
-        ColumnFamily returnCF = ArrayBackedSortedColumns.factory.create(cfs.metadata, cmd.filter().isReversed());
         filter.collateOnDiskAtom(returnCF, iterators, cfs.gcBefore(cmd.timestamp));
         return new Row(cmd.key, returnCF);
     }
