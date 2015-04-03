@@ -1222,7 +1222,7 @@ public class StorageProxy implements StorageProxyMBean
         //Identify the maxRepairedTime for the SStables that cover the partition
         long maxRepairedTime = getMaxRepairedTimeForQueryPartition(keyspace, command);
 
-        Tracing.trace("Sending REPAIRED_QUORUM read command to replicas with max repaired time of {}.",
+        Tracing.trace("Sending REPAIRED_QUORUM read command to replicas with maxRepairedAt={}",
                 new Object[]{ maxRepairedTime });
 
         //Pass the maxRepairedTime to the ReadCommand and MessageService
@@ -1416,7 +1416,7 @@ public class StorageProxy implements StorageProxyMBean
                     {
                         if (exec.command.isRepairOptimized() && isRepairedQuorumCoordinator(consistencyLevel, exec.command))
                         {
-                            row = collateRepairedSStables(exec.command, row);
+                            row = collateRepairedQuorumRead(exec.command, row);
                         }
                         exec.command.maybeTrim(row);
                         rows.add(row);
@@ -1547,31 +1547,48 @@ public class StorageProxy implements StorageProxyMBean
         return rows;
     }
 
-    //FIXME: don't know if this is the best place for this collation - leaving here for now.
-    private static Row collateRepairedSStables(final ReadCommand cmd, Row unrepairedCf) {
-        Keyspace ks = Keyspace.open(cmd.ksName);
-        ColumnFamilyStore cfs = ks.getColumnFamilyStore(cmd.cfName);
 
-        //Execute the repaired only read locally.
-        List<OnDiskAtomIterator> repairedSSTables = getRepairedSSTablesColumns(cfs, cmd);
-        Tracing.trace("Merging {} unrepaired columns with data from {} repaired sstables.",
-                new Object[]{ unrepairedCf.cf.getColumnCount(), repairedSSTables.size() });
+    /**
+     * This method performs the collation of unrepaired columns received during the
+     * first step of the remote REPAIRED_QUORUM read with local repaired columns of
+     * the query coordinator, which is assumed to be a replica of the query partition.
+     *
+     * FIXME: don't know if the StorageProxy is the best place for this collation - leaving here for now.
+     */
+    private static Row collateRepairedQuorumRead(final ReadCommand cmd, Row unrepairedRow) {
+        ColumnFamilyStore cfs = Keyspace.open(cmd.ksName).getColumnFamilyStore(cmd.cfName);
+        DecoratedKey dk = StorageService.getPartitioner().decorateKey(cmd.key);
+        QueryFilter filter = new QueryFilter(dk, cmd.cfName, cmd.filter(), cmd.timestamp);
 
-        //Merge the results
-        ColumnFamily mergedCf = unrepairedCf.cf.cloneMeShallow();
-        QueryFilter.collateOnDiskAtom(mergedCf, repairedSSTables, cmd.filter(),
-                cfs.gcBefore(cmd.timestamp), cmd.timestamp);
+        List<OnDiskAtomIterator> repairedSSTables = getRepairedSSTables(cfs, cmd, filter);
 
-        return new Row(cmd.key, mergedCf);
+        int unrepairedColumns = unrepairedRow.cf == null? 0 : unrepairedRow.cf.getColumnCount();
+        Tracing.trace("Merging {} unrepaired columns with {} repaired SSTables during REPAIRED_QUORUM read.",
+                new Object[]{unrepairedColumns, repairedSSTables.size()});
+
+        return mergeUnrepairedRowWithRepairedSSTables(cmd, unrepairedRow.cf, cfs, filter, repairedSSTables);
     }
 
-    private static List<OnDiskAtomIterator> getRepairedSSTablesColumns(ColumnFamilyStore cfs, ReadCommand cmd)
+    private static Row mergeUnrepairedRowWithRepairedSSTables(ReadCommand cmd, ColumnFamily unrepairedCf,
+                                                              ColumnFamilyStore cfs, QueryFilter filter,
+                                                              List<OnDiskAtomIterator> repairedSSTables)
+    {
+        List<Iterator<? extends OnDiskAtom>> iterators = new ArrayList<>();
+        iterators.addAll(repairedSSTables);
+        if (unrepairedCf != null)
+        {
+            iterators.add(filter.getIterator(unrepairedCf));
+        }
+
+        ColumnFamily returnCF = ArrayBackedSortedColumns.factory.create(cfs.metadata, cmd.filter().isReversed());
+        filter.collateOnDiskAtom(returnCF, iterators, cfs.gcBefore(cmd.timestamp));
+        return new Row(cmd.key, returnCF);
+    }
+
+    private static List<OnDiskAtomIterator> getRepairedSSTables(ColumnFamilyStore cfs, ReadCommand cmd, final QueryFilter filter)
     {
         Set<SSTableReader> repairedSSTablesForPartition = cfs.getRepairedSSTablesForPartition(cmd.key,
                 cmd.getMaxPartitionRepairTime());
-
-        DecoratedKey dk = StorageService.getPartitioner().decorateKey(cmd.key);
-        final QueryFilter filter = new QueryFilter(dk, cmd.cfName, cmd.filter(), cmd.timestamp);
 
         return Lists.newArrayList(Iterables.transform(repairedSSTablesForPartition,
                 new Function<SSTableReader, OnDiskAtomIterator>()
