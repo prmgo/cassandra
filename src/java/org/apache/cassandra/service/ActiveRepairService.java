@@ -250,7 +250,8 @@ public class ActiveRepairService
     public synchronized UUID prepareForRepair(Set<InetAddress> endpoints, Collection<Range<Token>> ranges, List<ColumnFamilyStore> columnFamilyStores)
     {
         UUID parentRepairSession = UUIDGen.getTimeUUID();
-        registerParentRepairSession(parentRepairSession, columnFamilyStores, ranges);
+        long timestamp = System.currentTimeMillis();
+        registerParentRepairSession(parentRepairSession, columnFamilyStores, ranges, timestamp);
         final CountDownLatch prepareLatch = new CountDownLatch(endpoints.size());
         final AtomicBoolean status = new AtomicBoolean(true);
         final Set<String> failedNodes = Collections.synchronizedSet(new HashSet<String>());
@@ -280,7 +281,7 @@ public class ActiveRepairService
 
         for(InetAddress neighbour : endpoints)
         {
-            PrepareMessage message = new PrepareMessage(parentRepairSession, cfIds, ranges);
+            PrepareMessage message = new PrepareMessage(parentRepairSession, cfIds, ranges, timestamp);
             MessageOut<RepairMessage> msg = message.createMessage();
             MessagingService.instance().sendRRWithFailure(msg, neighbour, callback);
         }
@@ -303,9 +304,9 @@ public class ActiveRepairService
         return parentRepairSession;
     }
 
-    public synchronized void registerParentRepairSession(UUID parentRepairSession, List<ColumnFamilyStore> columnFamilyStores, Collection<Range<Token>> ranges)
+    public synchronized void registerParentRepairSession(UUID parentRepairSession, List<ColumnFamilyStore> columnFamilyStores, Collection<Range<Token>> ranges, long timestamp)
     {
-        parentRepairSessions.put(parentRepairSession, new ParentRepairSession(columnFamilyStores, ranges, System.currentTimeMillis()));
+        parentRepairSessions.put(parentRepairSession, new ParentRepairSession(columnFamilyStores, ranges, timestamp));
     }
 
     public Set<SSTableReader> currentlyRepairing(UUID cfId, UUID parentRepairSession)

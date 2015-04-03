@@ -39,12 +39,15 @@ public class PrepareMessage extends RepairMessage
 
     public final UUID parentRepairSession;
 
-    public PrepareMessage(UUID parentRepairSession, List<UUID> cfIds, Collection<Range<Token>> ranges)
+    public final long timestamp;
+
+    public PrepareMessage(UUID parentRepairSession, List<UUID> cfIds, Collection<Range<Token>> ranges, long timestamp)
     {
         super(Type.PREPARE_MESSAGE, null);
         this.parentRepairSession = parentRepairSession;
         this.cfIds = cfIds;
         this.ranges = ranges;
+        this.timestamp = timestamp;
     }
 
     public static class PrepareMessageSerializer implements MessageSerializer<PrepareMessage>
@@ -58,6 +61,7 @@ public class PrepareMessage extends RepairMessage
             out.writeInt(message.ranges.size());
             for (Range r : message.ranges)
                 Range.serializer.serialize(r, out, version);
+            out.writeLong(message.timestamp);
         }
 
         public PrepareMessage deserialize(DataInput in, int version) throws IOException
@@ -71,7 +75,8 @@ public class PrepareMessage extends RepairMessage
             List<Range<Token>> ranges = new ArrayList<>(rangeCount);
             for (int i = 0; i < rangeCount; i++)
                 ranges.add((Range<Token>) Range.serializer.deserialize(in, version).toTokenBounds());
-            return new PrepareMessage(parentRepairSession, cfIds, ranges);
+            long timestamp = in.readLong();
+            return new PrepareMessage(parentRepairSession, cfIds, ranges, timestamp);
         }
 
         public long serializedSize(PrepareMessage message, int version)
@@ -96,6 +101,7 @@ public class PrepareMessage extends RepairMessage
                 "cfIds='" + cfIds + '\'' +
                 ", ranges=" + ranges +
                 ", parentRepairSession=" + parentRepairSession +
+                ", timestamp=" + timestamp +
                 '}';
     }
 }
