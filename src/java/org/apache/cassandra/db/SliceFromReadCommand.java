@@ -48,7 +48,8 @@ public class SliceFromReadCommand extends ReadCommand
 
     public ReadCommand copy()
     {
-        return new SliceFromReadCommand(ksName, key, cfName, timestamp, filter).setIsDigestQuery(isDigestQuery());
+        return new SliceFromReadCommand(ksName, key, cfName, timestamp, filter).setIsDigestQuery(isDigestQuery())
+                                                            .setMaxPartitionRepairTime(getMaxPartitionRepairTime());
     }
 
     public Row getRow(Keyspace keyspace)
