@@ -1216,14 +1216,13 @@ public class StorageProxy implements StorageProxyMBean
         if (!isLocalRequest(keyspace, command))
         {
             throw new InvalidRequestException("REPAIRED_QUORUM consistency may only be requested from a coordinator" +
-                                                "that is a replica of the row being queried.");
+                                                " that is a replica of the row being queried.");
         }
 
         //Identify the maxRepairedTime for the SStables that cover the partition
         long maxRepairedTime = getMaxRepairedTimeForQueryPartition(keyspace, command);
 
-        Tracing.trace("Sending REPAIRED_QUORUM read command to replicas with maxRepairedAt={}",
-                new Object[]{ maxRepairedTime });
+        Tracing.trace("Executing REPAIRED_QUORUM read command with maxRepairedAt={}", new Object[]{ maxRepairedTime });
 
         //Pass the maxRepairedTime to the ReadCommand and MessageService
         command.setMaxPartitionRepairTime(maxRepairedTime);
@@ -1258,7 +1257,7 @@ public class StorageProxy implements StorageProxyMBean
 
     private static boolean isLocalRequest(Keyspace keyspace, ReadCommand command) {
         List<InetAddress> allReplicas = getLiveSortedEndpoints(keyspace, command.key);
-        return allReplicas.contains(FBUtilities.getBroadcastAddress()) && OPTIMIZE_LOCAL_REQUESTS;
+        return allReplicas.contains(FBUtilities.getBroadcastAddress());
     }
 
     private static long getMaxRepairedTimeForQueryPartition(Keyspace keyspace, ReadCommand command) {
@@ -1414,10 +1413,6 @@ public class StorageProxy implements StorageProxyMBean
                     Row row = exec.get();
                     if (row != null)
                     {
-                        if (isRepairedQuorumRead(exec.command))
-                        {
-                            row = collateRepairedQuorumRead(exec.command, row);
-                        }
                         exec.command.maybeTrim(row);
                         rows.add(row);
                     }
@@ -1537,10 +1532,6 @@ public class StorageProxy implements StorageProxyMBean
 
                     if (row != null)
                     {
-                        if (isRepairedQuorumRead(command))
-                        {
-                            row = collateRepairedQuorumRead(command, row);
-                        }
                         command.maybeTrim(row);
                         rows.add(row);
                     }
@@ -1549,46 +1540,6 @@ public class StorageProxy implements StorageProxyMBean
         } while (!commandsToRetry.isEmpty());
 
         return rows;
-    }
-
-
-    /**
-     * This method performs the collation of unrepaired columns received during the
-     * first step of the remote REPAIRED_QUORUM read with local repaired columns of
-     * the query coordinator, which is assumed to be a replica of the query partition.
-     *
-     * FIXME: don't know if the StorageProxy is the best place for this collation, should we move this to CollationController?
-     */
-    private static Row collateRepairedQuorumRead(final ReadCommand cmd, Row unrepairedRow) {
-        ColumnFamilyStore cfs = Keyspace.open(cmd.ksName).getColumnFamilyStore(cmd.cfName);
-        DecoratedKey dk = StorageService.getPartitioner().decorateKey(cmd.key);
-        QueryFilter filter = new QueryFilter(dk, cmd.cfName, cmd.filter(), cmd.timestamp);
-
-        List<OnDiskAtomIterator> repairedSSTables = getRepairedSSTables(cfs, cmd, filter);
-
-        int unrepairedColumns = unrepairedRow.cf == null? 0 : unrepairedRow.cf.getColumnCount();
-        Tracing.trace("Merging {} unrepaired columns with {} repaired SSTables during REPAIRED_QUORUM read.",
-                new Object[]{unrepairedColumns, repairedSSTables.size()});
-
-        return mergeUnrepairedRowWithRepairedSSTables(cmd, unrepairedRow.cf, cfs, filter, repairedSSTables);
-    }
-
-    private static Row mergeUnrepairedRowWithRepairedSSTables(ReadCommand cmd, ColumnFamily unrepairedCf,
-                                                              ColumnFamilyStore cfs, QueryFilter filter,
-                                                              List<OnDiskAtomIterator> repairedSSTables)
-    {
-        ColumnFamily returnCF = ArrayBackedSortedColumns.factory.create(cfs.metadata, cmd.filter().isReversed());
-
-        List<Iterator<? extends OnDiskAtom>> iterators = new ArrayList<>();
-        iterators.addAll(repairedSSTables);
-        if (unrepairedCf != null)
-        {
-            iterators.add(filter.getIterator(unrepairedCf));
-            returnCF.delete(unrepairedCf); //include unrepaired tombstones on the results
-        }
-
-        filter.collateOnDiskAtom(returnCF, iterators, cfs.gcBefore(cmd.timestamp));
-        return new Row(cmd.key, returnCF);
     }
 
     private static List<OnDiskAtomIterator> getRepairedSSTables(ColumnFamilyStore cfs, ReadCommand cmd, final QueryFilter filter)
@@ -1604,10 +1555,6 @@ public class StorageProxy implements StorageProxyMBean
                         return filter.getSSTableColumnIterator(sstable);
                     }
                 }));
-    }
-
-    private static boolean isRepairedQuorumRead(ReadCommand cmd) {
-        return cmd.getMaxPartitionRepairTime() != ActiveRepairService.UNREPAIRED_SSTABLE && isLocalRequest(Keyspace.open(cmd.ksName), cmd);
     }
 
     static class LocalReadRunnable extends DroppableRunnable

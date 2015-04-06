@@ -59,14 +59,20 @@ public abstract class AbstractReadExecutor
 
     protected final ReadCommand command;
     protected final List<InetAddress> targetReplicas;
-    protected final RowDigestResolver resolver;
+    protected final AbstractRowResolver resolver;
     protected final ReadCallback<ReadResponse, Row> handler;
 
     AbstractReadExecutor(ReadCommand command, ConsistencyLevel consistencyLevel, List<InetAddress> targetReplicas)
     {
+        this(command, consistencyLevel, targetReplicas, new RowDigestResolver(command.ksName, command.key));
+    }
+
+    AbstractReadExecutor(ReadCommand command, ConsistencyLevel consistencyLevel, List<InetAddress> targetReplicas,
+                         AbstractRowResolver resolver)
+    {
         this.command = command;
         this.targetReplicas = targetReplicas;
-        resolver = new RowDigestResolver(command.ksName, command.key);
+        this.resolver = resolver;
         handler = new ReadCallback<>(resolver, consistencyLevel, command, targetReplicas);
     }
 
@@ -78,6 +84,11 @@ public abstract class AbstractReadExecutor
     protected void makeDataRequests(Iterable<InetAddress> endpoints)
     {
         makeRequests(command, endpoints);
+    }
+
+    protected void makeDataRequestsWithoutMaxRepairedAt(Iterable<InetAddress> endpoints)
+    {
+        makeRequests(command.copy().resetMaxRepairedAt(), endpoints);
     }
 
     protected void makeDigestRequests(Iterable<InetAddress> endpoints)
@@ -98,7 +109,7 @@ public abstract class AbstractReadExecutor
                 continue;
             }
 
-            logger.trace("reading {} from {}", readCommand.isDigestQuery() ? "digest" : "data", endpoint);
+            logger.trace("reading {} from {} (maxRepairedAt={})", readCommand.isDigestQuery() ? "digest" : "data", endpoint, command.getMaxPartitionRepairTime());
             if (message == null)
                 message = readCommand.createMessage();
             MessagingService.instance().sendRR(message, endpoint, handler);
@@ -107,8 +118,8 @@ public abstract class AbstractReadExecutor
         // We delay the local (potentially blocking) read till the end to avoid stalling remote requests.
         if (hasLocalEndpoint)
         {
-            logger.trace("reading {} locally", readCommand.isDigestQuery() ? "digest" : "data");
-            StageManager.getStage(Stage.READ).maybeExecuteImmediately(new LocalReadRunnable(command, handler));
+            logger.trace("reading {} locally (maxRepairedAt={})", readCommand.isDigestQuery() ? "digest" : "data", readCommand.getMaxPartitionRepairTime());
+            StageManager.getStage(Stage.READ).maybeExecuteImmediately(new LocalReadRunnable(readCommand, handler));
         }
     }
 
@@ -152,16 +163,20 @@ public abstract class AbstractReadExecutor
         // Throw UAE early if we don't have enough replicas.
         consistencyLevel.assureSufficientLiveNodes(keyspace, targetReplicas);
 
-        // Fat client or repaired quorum consistency. Speculating read executors need access to cfs metrics and
-        // sampled latency, and fat clients can't provide that. So, for now, fat clients will always use
-        // NeverSpeculatingReadExecutor.
-        if (StorageService.instance.isClientMode() || consistencyLevel.equals(ConsistencyLevel.REPAIRED_QUORUM))
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(command.cfName);
+
+        //For now we have a special executor for REPAIRED_QUORUM reads
+        if (consistencyLevel.equals(ConsistencyLevel.REPAIRED_QUORUM))
+            return new RepairedQuorumReadExecutor(cfs, command, targetReplicas);
+
+        // Fat client. Speculating read executors need access to cfs metrics and sampled latency,
+        // and fat clients can't provide that. So, for now, fat clients will always use NeverSpeculatingReadExecutor.
+        if (StorageService.instance.isClientMode())
             return new NeverSpeculatingReadExecutor(command, consistencyLevel, targetReplicas);
 
         if (repairDecision != ReadRepairDecision.NONE)
             ReadRepairMetrics.attempted.mark();
 
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(command.cfName);
         RetryType retryType = cfs.metadata.getSpeculativeRetry().type;
 
         // Speculative retry is disabled *OR* there are simply no extra replicas to speculate.
@@ -211,6 +226,36 @@ public abstract class AbstractReadExecutor
             makeDataRequests(targetReplicas.subList(0, 1));
             if (targetReplicas.size() > 1)
                 makeDigestRequests(targetReplicas.subList(1, targetReplicas.size()));
+        }
+
+        public void maybeTryAdditionalReplicas()
+        {
+            // no-op
+        }
+
+        public Collection<InetAddress> getContactedReplicas()
+        {
+            return targetReplicas;
+        }
+    }
+
+    private static class RepairedQuorumReadExecutor extends AbstractReadExecutor
+    {
+        private final ColumnFamilyStore cfs;
+
+        public RepairedQuorumReadExecutor(ColumnFamilyStore cfs, ReadCommand command, List<InetAddress> targetReplicas)
+        {
+            super(command, ConsistencyLevel.REPAIRED_QUORUM, targetReplicas, new RepairedQuorumReadRowResolver(command, cfs));
+            this.cfs = cfs;
+        }
+
+        public void executeAsync()
+        {
+            // read since-repaired data from other replicas
+            makeDataRequests(targetReplicas.subList(1, targetReplicas.size()));
+
+            // read all data from local coordinator (that's why we reset the maxPartitionRepairTime)
+            makeDataRequestsWithoutMaxRepairedAt(targetReplicas.subList(0, 1));
         }
 
         public void maybeTryAdditionalReplicas()
