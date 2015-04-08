@@ -90,6 +90,7 @@ public class PrepareMessage extends RepairMessage
             size += sizes.sizeof(message.ranges.size());
             for (Range r : message.ranges)
                 size += Range.serializer.serializedSize(r, version);
+            size += sizes.sizeof(message.timestamp);
             return size;
         }
     }
